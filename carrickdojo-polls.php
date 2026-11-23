@@ -2,11 +2,13 @@
 /**
  * Plugin Name:       CarrickDojo Polls
  * Description:       Anonymous one-time-code polls for the CarrickDojo club site.
- * Version:           0.1.0
+ * Version:           0.2.0
  * Author:            CarrickDojo
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  */
+
+declare(strict_types=1);
 
 namespace CarrickDojo\Polls;
 
@@ -16,6 +18,22 @@ if (!defined('ABSPATH')) {
 }
 
 const DB_VERSION = '1';
+
+// How many codes to generate by default, and the most allowed in one go
+const DEFAULT_CODES = 30;
+const MAX_CODES = 200;
+
+// Fewer votes than this and only the total is published, so no single vote can be worked out
+const MIN_VOTES_FOR_BREAKDOWN = 5;
+
+// Wrong codes allowed per poll per window before voting pauses (stops guessing)
+const FAIL_LIMIT = 10;
+const FAIL_WINDOW = 60; // seconds
+
+require_once __DIR__ . '/includes/words.php';
+require_once __DIR__ . '/includes/codes.php';
+require_once __DIR__ . '/includes/admin.php';
+require_once __DIR__ . '/includes/rest.php';
 
 /**
  * Table names, with the site's prefix (usually wp_).
@@ -70,3 +88,18 @@ function install(): void
 }
 
 register_activation_hook(__FILE__, __NAMESPACE__ . '\\install');
+
+// Uploading a new zip replaces the files without re-activating, so check the tables on load too
+add_action('plugins_loaded', function (): void {
+	if (get_option('carrick_polls_db_version') !== DB_VERSION) {
+		install();
+	}
+});
+
+/**
+ * Poll slugs: lowercase letters, numbers and hyphens, the same as the .md file name on the frontend.
+ */
+function is_valid_slug(string $slug): bool
+{
+	return (bool) preg_match('/^[a-z0-9-]{1,100}$/', $slug);
+}
