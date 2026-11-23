@@ -71,3 +71,4 @@ Question IDs use lowercase letters, numbers and hyphens, and must include at lea
 
 - Restrict voting to the club building's IP address.
 - Generate codes as COLOUR-ANIMAL (e.g. `RED-TIGER`) instead of ANIMAL-COLOUR.
+- Use a dedicated polling secret, `DOJO_POLLING_SECRET` (separate from `CARRICK_FRONTEND_SECRET`). `wp-config.php` can't be edited on Wasmer, so it's set in **Tools → Polls** and stored only as a hash.
