@@ -70,3 +70,4 @@ Question IDs use lowercase letters, numbers and hyphens, and must include at lea
 ## Planned
 
 - Restrict voting to the club building's IP address.
+- Generate codes as COLOUR-ANIMAL (e.g. `RED-TIGER`) instead of ANIMAL-COLOUR.
