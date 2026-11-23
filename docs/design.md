@@ -49,9 +49,9 @@ Each vote is a **round** with its own polls, dates and result. Rounds never mix.
 6. **Small groups are protected.** With fewer than 5 votes, only the total is published.
 7. **Delete early.** Codes, sign-ins and quiz data go the day after the session. Votes go when the poll is finalised.
 8. **Personas, not names.** Personas are built only from approved word lists (never typed), and the plugin refuses any persona that looks like a code, so a leaderboard never gives away a code. Personas are never linked to votes.
-10. **The projector needs a screen code.** Live counts and leaderboards are only shown to screen and mentor codes, so they never appear on the public internet.
-11. **While a poll is open, only totals are shown** ("18 of 30 voted"), even to mentors: in a room, live bars would show how a friend voted.
-9. **Secrets are hashed.** The polling secret and sign-in tokens are stored only as SHA-256 hashes.
+9. **The projector needs a screen code.** Live counts and leaderboards are only shown to screen and mentor codes, so they never appear on the public internet.
+10. **While a poll is open, only totals are shown** ("18 of 30 voted"), even to mentors: in a room, live bars would show how a friend voted.
+11. **Secrets are hashed.** The polling secret and sign-in tokens are stored only as SHA-256 hashes.
 
 ## Safety on shared laptops
 
