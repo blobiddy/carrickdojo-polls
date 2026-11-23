@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       CarrickDojo Polls
  * Description:       Anonymous session-code polls, questionnaires, RFCs and quizzes for the CarrickDojo club site.
- * Version:           0.3.0
+ * Version:           0.4.0
  * Author:            CarrickDojo
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,14 +17,24 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-const DB_VERSION = '2';
+const DB_VERSION = '3';
 
 // The club's timezone. Session IDs are dates in this timezone.
 const TIMEZONE = 'Europe/Dublin';
 
-// How many codes to generate by default, and the most allowed in one go
+// Kinds of code:
+//   member  ninjas and mentors: vote, pick a persona, play quizzes
+//   screen  the projector: sees live counts and quizzes, can't vote or play
+//   mentor  the mentor's laptop: sees everything and controls quizzes and polls, can't vote or play
+const KIND_MEMBER = 'member';
+const KIND_SCREEN = 'screen';
+const KIND_MENTOR = 'mentor';
+
+// How many codes to generate by default, and the most allowed
 const DEFAULT_CODES = 30;
 const MAX_CODES = 200;
+const DEFAULT_MENTOR_CODES = 3;
+const MAX_MENTOR_CODES = 3;
 
 // Fewer votes than this and only the total is published, so no single vote can be worked out
 const MIN_VOTES_FOR_BREAKDOWN = 5;
@@ -44,8 +54,13 @@ require_once __DIR__ . '/includes/words.php';
 require_once __DIR__ . '/includes/helpers.php';
 require_once __DIR__ . '/includes/secret.php';
 require_once __DIR__ . '/includes/codes.php';
+require_once __DIR__ . '/includes/personas.php';
 require_once __DIR__ . '/includes/cleanup.php';
+require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/rest.php';
+require_once __DIR__ . '/includes/rest-session.php';
+require_once __DIR__ . '/includes/rest-votes.php';
+require_once __DIR__ . '/includes/rest-quiz.php';
 require_once __DIR__ . '/includes/admin.php';
 
 /**
@@ -58,7 +73,7 @@ function table(string $name): string
 }
 
 /**
- * Create or update the tables, role and scheduled cleanup.
+ * Create or update the tables, role and scheduled clean-up.
  * dbDelta is strict about formatting: two spaces after PRIMARY KEY, one field per line.
  */
 function install(): void
@@ -68,9 +83,18 @@ function install(): void
 
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-	// Version 1 tables were never used in production and have a different shape: replace them
-	if (get_option('carrick_polls_db_version') === '1') {
+	$installed = get_option('carrick_polls_db_version');
+
+	// Version 1 tables were never used and have a different shape: replace them
+	if ($installed === '1') {
 		foreach (['codes', 'votes', 'results'] as $old) {
+			$wpdb->query('DROP TABLE IF EXISTS ' . table($old));
+		}
+	}
+
+	// Version 2 quiz tables were never used and are replaced by personas and new quiz tables
+	if ($installed === '1' || $installed === '2') {
+		foreach (['quiz_players', 'quiz_scores', 'quiz_answers'] as $old) {
 			$wpdb->query('DROP TABLE IF EXISTS ' . table($old));
 		}
 	}
@@ -78,7 +102,8 @@ function install(): void
 	// Session codes. Deleted the day after their session.
 	dbDelta("CREATE TABLE " . table('codes') . " (
 		session char(10) NOT NULL,
-		code varchar(40) NOT NULL,
+		code varchar(60) NOT NULL,
+		kind varchar(10) NOT NULL DEFAULT 'member',
 		PRIMARY KEY  (session, code)
 	) $charset;");
 
@@ -86,7 +111,7 @@ function install(): void
 	// and matched against votes. Deleted with the session's codes, or when the poll is finalised.
 	dbDelta("CREATE TABLE " . table('code_uses') . " (
 		session char(10) NOT NULL,
-		code varchar(40) NOT NULL,
+		code varchar(60) NOT NULL,
 		poll varchar(100) NOT NULL,
 		PRIMARY KEY  (session, code, poll)
 	) $charset;");
@@ -95,7 +120,8 @@ function install(): void
 	dbDelta("CREATE TABLE " . table('tokens') . " (
 		token_hash char(64) NOT NULL,
 		session char(10) NOT NULL,
-		code varchar(40) NOT NULL,
+		code varchar(60) NOT NULL,
+		kind varchar(10) NOT NULL DEFAULT 'member',
 		expires_at datetime NOT NULL,
 		PRIMARY KEY  (token_hash),
 		KEY session (session)
@@ -120,31 +146,39 @@ function install(): void
 		PRIMARY KEY  (poll)
 	) $charset;");
 
-	// Quiz nicknames, one per code per session. Never the code itself. Deleted after the session.
-	dbDelta("CREATE TABLE " . table('quiz_players') . " (
+	// Personas (e.g. Cosmic-Kernel-Duke), one per code per session, unique in the session.
+	// The unique key ignores case. Deleted the day after the session.
+	dbDelta("CREATE TABLE " . table('personas') . " (
 		session char(10) NOT NULL,
-		code varchar(40) NOT NULL,
-		nickname varchar(60) NOT NULL,
+		code varchar(60) NOT NULL,
+		persona varchar(100) NOT NULL,
 		PRIMARY KEY  (session, code),
-		UNIQUE KEY session_nickname (session, nickname)
+		UNIQUE KEY session_persona (session, persona)
 	) $charset;");
 
-	// Running quiz scores. Deleted after the session.
-	dbDelta("CREATE TABLE " . table('quiz_scores') . " (
+	// A live quiz's state, set by the mentor laptop: when it started, pauses, and time shifts.
+	// The club site works out the current question from this and the quiz's .md file.
+	dbDelta("CREATE TABLE " . table('quiz_runs') . " (
 		session char(10) NOT NULL,
 		quiz varchar(100) NOT NULL,
-		code varchar(40) NOT NULL,
-		score int unsigned NOT NULL DEFAULT 0,
-		PRIMARY KEY  (session, quiz, code)
+		started_at datetime NULL,
+		paused_at datetime NULL,
+		shift_seconds int NOT NULL DEFAULT 0,
+		leaderboard_until datetime NULL,
+		ended tinyint(1) NOT NULL DEFAULT 0,
+		PRIMARY KEY  (session, quiz)
 	) $charset;");
 
-	// Which quiz questions a code has scored, so points can't be counted twice. Deleted after the session.
+	// Quiz answers and points, one per question per player. Deleted the day after the session.
 	dbDelta("CREATE TABLE " . table('quiz_answers') . " (
 		session char(10) NOT NULL,
 		quiz varchar(100) NOT NULL,
-		code varchar(40) NOT NULL,
+		code varchar(60) NOT NULL,
 		question varchar(100) NOT NULL,
-		PRIMARY KEY  (session, quiz, code, question)
+		answer varchar(200) NOT NULL,
+		points int unsigned NOT NULL DEFAULT 0,
+		PRIMARY KEY  (session, quiz, code, question),
+		KEY quiz_question (session, quiz, question)
 	) $charset;");
 
 	install_role();

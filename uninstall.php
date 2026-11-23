@@ -12,7 +12,7 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 
 global $wpdb;
 
-foreach (['codes', 'code_uses', 'tokens', 'votes', 'results', 'quiz_players', 'quiz_scores', 'quiz_answers'] as $name) {
+foreach (['codes', 'code_uses', 'tokens', 'votes', 'results', 'personas', 'quiz_runs', 'quiz_answers'] as $name) {
 	$wpdb->query('DROP TABLE IF EXISTS ' . $wpdb->prefix . 'carrick_poll_' . $name);
 }
 

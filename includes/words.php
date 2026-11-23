@@ -1,12 +1,13 @@
 <?php
 /**
- * Word lists. Easy to read and spell, no look-alikes.
+ * Word lists for codes. Easy to read and spell, no look-alikes.
  *
- * Codes are COLOUR-ANIMAL: 16 x 60 = 960 combinations, so a random guess has about a 3% chance
+ * Member codes are COLOUR-ANIMAL: 16 x 60 = 960 combinations, so a random guess has about a 3% chance
  * of hitting one of 30 codes. The wrong-code limit stops repeated guessing.
+ * Mentor and screen codes unlock more, so they are four words (COLOUR-ANIMAL-COLOUR-ANIMAL):
+ * about 920,000 combinations.
  *
- * Quiz nicknames are Adjective Animal (e.g. "Brave Otter"). They deliberately use different
- * words from codes, so a nickname on a leaderboard never gives away anyone's code.
+ * Personas use their own word lists, kept on the club site (src/content/personas.md).
  */
 
 declare(strict_types=1);
@@ -29,11 +30,4 @@ const ANIMALS = [
 	'KANGAROO', 'KOALA', 'LION', 'LIZARD', 'LLAMA', 'MONKEY', 'MOOSE', 'MOUSE', 'OTTER', 'OWL',
 	'PANDA', 'PARROT', 'PENGUIN', 'PIG', 'PUFFIN', 'RABBIT', 'RAVEN', 'SEAL', 'SHARK', 'SHEEP',
 	'SNAIL', 'SPIDER', 'SQUIRREL', 'SWAN', 'TIGER', 'TORTOISE', 'TURTLE', 'WHALE', 'WOLF', 'ZEBRA',
-];
-
-const NICKNAME_ADJECTIVES = [
-	'Brave', 'Bright', 'Bouncy', 'Busy', 'Calm', 'Clever', 'Cosmic', 'Curious', 'Daring', 'Dizzy',
-	'Eager', 'Fancy', 'Fearless', 'Friendly', 'Fuzzy', 'Gentle', 'Giant', 'Happy', 'Jolly', 'Lucky',
-	'Mighty', 'Nimble', 'Plucky', 'Quick', 'Quiet', 'Rapid', 'Sleepy', 'Sneaky', 'Speedy', 'Sunny',
-	'Super', 'Swift', 'Tiny', 'Witty', 'Zany', 'Zippy',
 ];

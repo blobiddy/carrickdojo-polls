@@ -7,7 +7,8 @@ How CarrickDojo polls work, and why. This is a club for children, so privacy dec
 | Term              | Meaning                                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------------------- |
 | **Session**       | One club session. Its ID is the date, e.g. `2026-11-24`. Times come from `sessions.md` on the club site.  |
-| **Session code**  | A slip handed out at a session (COLOUR-ANIMAL). Lets one person sign in and vote once in each open poll. |
+| **Session code**  | A slip for one session. **Member** (COLOUR-ANIMAL): ninjas and mentors vote and play. **Mentor** (four words, up to 3): mentors' laptops see and control everything. **Screen** (four words, one): the projector. |
+| **Persona**       | A quiz name of 2–4 words (e.g. Cosmic-Kernel-Duke), spun from word categories on the club site. Never typed, never a real name. |
 | **Poll**          | One question. Types: `yes-no` and `choice` (pick one, or several with `multiple: true`). Scale (1–100) is planned.  |
 | **Questionnaire** | An ordered group of polls with a shared intro, for gathering opinions.                                   |
 | **RFC**           | Request for comment: a group of polls about a **proposal**, ending in a recorded decision.              |
@@ -28,7 +29,9 @@ Games are out of scope for now.
 | Code uses: which code voted in which poll| WordPress             | Until the poll is finalised, or the day after |
 | Votes (no code)                          | WordPress             | Until the poll is finalised                   |
 | Results                                  | WordPress             | Permanently                                   |
-| Quiz nicknames and scores                | WordPress             | Until the day after the session               |
+| Personas                                 | WordPress             | Until the day after the session               |
+| Quiz runs (mentor overrides), answers and points | WordPress     | Until the day after the session               |
+| Persona word lists                       | `.md` on the club site| Permanently (in git)                          |
 
 ## RFC lifecycle
 
@@ -45,7 +48,9 @@ Each vote is a **round** with its own polls, dates and result. Rounds never mix.
 5. **We don't analyse how people vote together.** Each poll is tallied on its own.
 6. **Small groups are protected.** With fewer than 5 votes, only the total is published.
 7. **Delete early.** Codes, sign-ins and quiz data go the day after the session. Votes go when the poll is finalised.
-8. **Quiz nicknames are generated** (Adjective Animal) and never use the code's words, so a leaderboard never gives away a code. Leaderboards are for the room's screen, and are deleted the day after.
+8. **Personas, not names.** Personas are built only from approved word lists (never typed), and the plugin refuses any persona that looks like a code, so a leaderboard never gives away a code. Personas are never linked to votes.
+10. **The projector needs a screen code.** Live counts and leaderboards are only shown to screen and mentor codes, so they never appear on the public internet.
+11. **While a poll is open, only totals are shown** ("18 of 30 voted"), even to mentors: in a room, live bars would show how a friend voted.
 9. **Secrets are hashed.** The polling secret and sign-in tokens are stored only as SHA-256 hashes.
 
 ## Safety on shared laptops
@@ -58,8 +63,9 @@ Club laptops are shared, so the club site should:
 
 ## Who does what
 
-- **Club site (server):** holds poll definitions, checks a poll is open and answers are real options, runs quiz timers and works out points, decides when to finalise. Calls WordPress with `X-Polling-Secret`.
+- **Club site (server):** holds poll and quiz definitions and persona word lists, checks a poll is open and answers are real options, checks persona words, works out the quiz schedule and points, decides when to finalise. Calls WordPress with `X-Polling-Secret`.
 - **Plugin:** enforces codes, one vote per code per poll, anonymity and deletion.
+- **Mentor laptop:** starts, pauses, resumes, shifts and ends quizzes, shows the leaderboard, closes polls early, signs everyone out.
 - **Poll manager role:** generates and prints session codes on the Polls admin page. Nothing else.
 - **Administrator:** everything, including the polling secret.
 

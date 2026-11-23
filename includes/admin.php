@@ -55,13 +55,16 @@ function handle_generate(): void
 	check_request('carrick_polls_generate');
 
 	$session = posted('session');
-	$result = generate_codes($session, absint(posted('count')));
+	$members = absint(posted('members'));
+	$mentors = absint(posted('mentors'));
+
+	$result = generate_codes($session, $members, $mentors);
 
 	if (is_wp_error($result)) {
 		redirect_with('error', $result->get_error_message());
 	}
 
-	redirect_with('success', sprintf('%d codes generated for %s.', count($result), session_label($session)), ['print' => $session]);
+	redirect_with('success', sprintf('Codes generated for %s.', session_label($session)), ['print' => $session]);
 }
 
 function handle_delete(): void
@@ -145,7 +148,12 @@ function render_generate_form(): void
 {
 	?>
 	<h2>Generate session codes</h2>
-	<p>Each ninja and mentor gets one code per session. It lets them sign in and vote once in every poll open that session. Codes only work on the day, and are deleted the day after.</p>
+	<p>
+		<strong>Member codes</strong> are for ninjas and mentors: one each. They sign in, pick a persona, vote once in every poll open that session, and play quizzes.<br>
+		<strong>Mentor codes</strong> are for mentors' laptops: they see everything and control quizzes and polls, but can't vote or play.
+		A <strong>screen code</strong> for the projector is made with them.<br>
+		Codes only work on the day, and are deleted the day after.
+	</p>
 	<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
 		<input type="hidden" name="action" value="carrick_polls_generate">
 		<?php wp_nonce_field('carrick_polls_generate'); ?>
@@ -155,13 +163,20 @@ function render_generate_form(): void
 				<td><input id="carrick-session" name="session" type="date" required min="<?php echo esc_attr(today()); ?>" value="<?php echo esc_attr(today()); ?>"></td>
 			</tr>
 			<tr>
-				<th scope="row"><label for="carrick-count">Number of codes</label></th>
-				<td><input id="carrick-count" name="count" type="number" min="1" max="<?php echo (int) MAX_CODES; ?>" value="<?php echo (int) DEFAULT_CODES; ?>"></td>
+				<th scope="row"><label for="carrick-members">Member codes</label></th>
+				<td><input id="carrick-members" name="members" type="number" min="0" max="<?php echo (int) MAX_CODES; ?>" value="<?php echo (int) DEFAULT_CODES; ?>"></td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="carrick-mentors">Mentor codes</label></th>
+				<td>
+					<input id="carrick-mentors" name="mentors" type="number" min="0" max="<?php echo (int) MAX_MENTOR_CODES; ?>" value="<?php echo (int) DEFAULT_MENTOR_CODES; ?>">
+					<p class="description">Plus one screen code. Set to 0 to leave a session's mentor and screen codes as they are.</p>
+				</td>
 			</tr>
 		</table>
 		<?php submit_button('Generate codes'); ?>
 	</form>
-	<p class="description">Generating again replaces a session's codes, but only until someone has signed in with one.</p>
+	<p class="description">Set member codes to 0 to add mentor codes without changing member slips already printed. Codes can be replaced until someone has signed in with one.</p>
 	<?php
 }
 
@@ -180,7 +195,9 @@ function render_sessions(): void
 		<thead>
 			<tr>
 				<th scope="col">Session</th>
-				<th scope="col">Codes</th>
+				<th scope="col">Member codes</th>
+				<th scope="col">Mentor codes</th>
+				<th scope="col">Screen code</th>
 				<th scope="col">Status</th>
 				<th scope="col">Actions</th>
 			</tr>
@@ -189,7 +206,9 @@ function render_sessions(): void
 			<?php foreach ($sessions as $row) : ?>
 				<tr>
 					<td><?php echo esc_html(session_label($row['session'])); ?></td>
-					<td><?php echo (int) $row['codes']; ?></td>
+					<td><?php echo (int) $row['members']; ?></td>
+					<td><?php echo (int) $row['mentors']; ?></td>
+					<td><?php echo $row['screens'] > 0 ? 'Yes' : 'No'; ?></td>
 					<td><?php echo $row['in_use'] ? 'In use' : 'Not used yet'; ?></td>
 					<td>
 						<a class="button" href="<?php echo esc_url(page_url(['print' => $row['session']])); ?>">Print codes</a>
@@ -274,18 +293,24 @@ function render_secret_form(): void
 
 /**
  * Codes as cut-out slips. Print with Ctrl+P: the print styles hide the WordPress admin around them.
+ * Mentor and screen codes are on their own page, so they're never handed out by mistake.
  */
 function render_print(string $session): void
 {
-	$codes = list_codes($session);
 	$label = session_label($session);
+	$members = list_codes($session, KIND_MEMBER);
+	$staff = [
+		...array_map(fn ($code) => [$code, 'Mentor laptop code'], list_codes($session, KIND_MENTOR)),
+		...array_map(fn ($code) => [$code, 'Projector screen code'], list_codes($session, KIND_SCREEN)),
+	];
 	?>
 	<p class="carrick-no-print">
 		<a href="<?php echo esc_url(page_url()); ?>">&larr; Back to polls</a>
-		&nbsp; Press <kbd>Ctrl</kbd>+<kbd>P</kbd> to print, then cut along the dashed lines and hand slips out at random.
+		&nbsp; Press <kbd>Ctrl</kbd>+<kbd>P</kbd> to print, then cut along the dashed lines.
+		Hand member slips out at random. Keep mentor and screen codes with the mentors.
 	</p>
 
-	<?php if ($codes === []) : ?>
+	<?php if ($members === [] && $staff === []) : ?>
 		<p>No codes for <?php echo esc_html($label); ?>.</p>
 		<?php return; ?>
 	<?php endif; ?>
@@ -293,22 +318,41 @@ function render_print(string $session): void
 	<style>
 		.carrick-slips { display: grid; grid-template-columns: repeat(3, 1fr); }
 		.carrick-slip { border: 1px dashed #999; padding: 1.2em 0.5em; text-align: center; break-inside: avoid; }
-		.carrick-slip strong { display: block; margin: 0.3em 0; font-size: 1.4em; letter-spacing: 0.05em; font-family: monospace; }
+		.carrick-slip strong { display: block; margin: 0.3em 0; font-size: 1.4em; letter-spacing: 0.05em; font-family: monospace; overflow-wrap: anywhere; }
 		.carrick-slip span { display: block; font-size: 0.85em; color: #555; }
+		.carrick-staff { break-before: page; }
+		.carrick-staff .carrick-slip { border-style: solid; border-width: 2px; }
 		@media print {
 			#adminmenumain, #wpadminbar, #wpfooter, .notice, .carrick-no-print, .wrap > h1 { display: none !important; }
 			#wpcontent, #wpbody-content { margin: 0 !important; padding: 0 !important; }
 		}
 	</style>
 
-	<div class="carrick-slips">
-		<?php foreach ($codes as $code) : ?>
-			<div class="carrick-slip">
-				<span>CarrickDojo code for <?php echo esc_html($label); ?></span>
-				<strong><?php echo esc_html($code); ?></strong>
-				<span>Sign in at club.carrickdojo.com. Keep it to yourself!</span>
+	<?php if ($members !== []) : ?>
+		<div class="carrick-slips">
+			<?php foreach ($members as $code) : ?>
+				<div class="carrick-slip">
+					<span>CarrickDojo code for <?php echo esc_html($label); ?></span>
+					<strong><?php echo esc_html($code); ?></strong>
+					<span>Sign in at club.carrickdojo.com. Keep it to yourself!</span>
+				</div>
+			<?php endforeach; ?>
+		</div>
+	<?php endif; ?>
+
+	<?php if ($staff !== []) : ?>
+		<div class="carrick-staff">
+			<h2>Mentors only: <?php echo esc_html($label); ?></h2>
+			<div class="carrick-slips">
+				<?php foreach ($staff as [$code, $what]) : ?>
+					<div class="carrick-slip">
+						<span><?php echo esc_html($what); ?></span>
+						<strong><?php echo esc_html($code); ?></strong>
+						<span>Do not hand out</span>
+					</div>
+				<?php endforeach; ?>
 			</div>
-		<?php endforeach; ?>
-	</div>
+		</div>
+	<?php endif; ?>
 	<?php
 }

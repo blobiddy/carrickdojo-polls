@@ -1,7 +1,7 @@
 <?php
 /**
  * Deletes everything that could identify anyone, as soon as it's no longer needed:
- * codes, code uses, sign-ins and quiz data from past sessions, and expired sign-ins.
+ * codes, code uses, sign-ins, personas and quiz data from past sessions, and expired sign-ins.
  *
  * Runs daily (WP-Cron) and before every sign-in, so it happens even if WP-Cron is late.
  * Votes are kept until their poll is finalised; they contain no codes.
@@ -23,7 +23,7 @@ function cleanup(): void
 
 	$today = today();
 
-	foreach (['codes', 'code_uses', 'tokens', 'quiz_players', 'quiz_scores', 'quiz_answers'] as $name) {
+	foreach (['codes', 'code_uses', 'tokens', 'personas', 'quiz_runs', 'quiz_answers'] as $name) {
 		$wpdb->query($wpdb->prepare('DELETE FROM ' . table($name) . ' WHERE session < %s', $today));
 	}
 
