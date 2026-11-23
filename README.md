@@ -79,5 +79,5 @@ Everything except `results` needs the `X-Polling-Secret` header and is called by
 
 ## Planned
 
-- Restrict sign-in to the club building's IP address.
+- Restrict sign-in to the club building's IP address. If `club.` or `cms.` are ever proxied through Cloudflare, use `CF-Connecting-IP`, trusting it only for requests that come from Cloudflare.
 - Scale questions (1–100).

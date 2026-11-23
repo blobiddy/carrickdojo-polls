@@ -62,3 +62,8 @@ Club laptops are shared, so the club site should:
 - **Plugin:** enforces codes, one vote per code per poll, anonymity and deletion.
 - **Poll manager role:** generates and prints session codes on the Polls admin page. Nothing else.
 - **Administrator:** everything, including the polling secret.
+
+## Hosting notes
+
+- `club.carrickdojo.com` (Vercel) and `cms.carrickdojo.com` (Wasmer) are **DNS only** in Cloudflare: not proxied, not cached. Only `carrickdojo.com` and `www` are proxied.
+- If `club.` or `cms.` are ever proxied, first: bypass the cache for sign-in, poll pages and `/json/*`; skip bot challenges for `/json/polls/*` (the club site's server can't solve them); and read visitor IPs from `CF-Connecting-IP`.
