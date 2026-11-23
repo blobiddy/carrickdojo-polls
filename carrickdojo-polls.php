@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       CarrickDojo Polls
- * Description:       Anonymous one-time-code polls for the CarrickDojo club site.
- * Version:           0.2.0
+ * Description:       Anonymous session-code polls, questionnaires, RFCs and quizzes for the CarrickDojo club site.
+ * Version:           0.3.0
  * Author:            CarrickDojo
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,10 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-const DB_VERSION = '1';
+const DB_VERSION = '2';
+
+// The club's timezone. Session IDs are dates in this timezone.
+const TIMEZONE = 'Europe/Dublin';
 
 // How many codes to generate by default, and the most allowed in one go
 const DEFAULT_CODES = 30;
@@ -26,14 +29,24 @@ const MAX_CODES = 200;
 // Fewer votes than this and only the total is published, so no single vote can be worked out
 const MIN_VOTES_FOR_BREAKDOWN = 5;
 
-// Wrong codes allowed per poll per window before voting pauses (stops guessing)
+// Wrong codes allowed per session per window before sign-in pauses (stops guessing)
 const FAIL_LIMIT = 10;
 const FAIL_WINDOW = 60; // seconds
 
+// A sign-in never lasts longer than this, even if the club site asks for longer
+const MAX_SIGNIN_HOURS = 12;
+
+// The capability that opens the Polls admin page, and the role that has it
+const CAPABILITY = 'manage_carrick_polls';
+const ROLE = 'poll_manager';
+
 require_once __DIR__ . '/includes/words.php';
+require_once __DIR__ . '/includes/helpers.php';
+require_once __DIR__ . '/includes/secret.php';
 require_once __DIR__ . '/includes/codes.php';
-require_once __DIR__ . '/includes/admin.php';
+require_once __DIR__ . '/includes/cleanup.php';
 require_once __DIR__ . '/includes/rest.php';
+require_once __DIR__ . '/includes/admin.php';
 
 /**
  * Table names, with the site's prefix (usually wp_).
@@ -45,8 +58,8 @@ function table(string $name): string
 }
 
 /**
- * Create or update the tables. dbDelta compares with what exists and only changes what's needed.
- * Note: dbDelta is strict about formatting (two spaces after PRIMARY KEY, one field per line).
+ * Create or update the tables, role and scheduled cleanup.
+ * dbDelta is strict about formatting: two spaces after PRIMARY KEY, one field per line.
  */
 function install(): void
 {
@@ -55,39 +68,105 @@ function install(): void
 
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-	// One-time codes. Deleted when the poll is finalised.
+	// Version 1 tables were never used in production and have a different shape: replace them
+	if (get_option('carrick_polls_db_version') === '1') {
+		foreach (['codes', 'votes', 'results'] as $old) {
+			$wpdb->query('DROP TABLE IF EXISTS ' . table($old));
+		}
+	}
+
+	// Session codes. Deleted the day after their session.
 	dbDelta("CREATE TABLE " . table('codes') . " (
-		id bigint unsigned NOT NULL AUTO_INCREMENT,
-		poll varchar(100) NOT NULL,
+		session char(10) NOT NULL,
 		code varchar(40) NOT NULL,
-		used tinyint(1) NOT NULL DEFAULT 0,
-		PRIMARY KEY  (id),
-		UNIQUE KEY poll_code (poll, code)
+		PRIMARY KEY  (session, code)
 	) $charset;");
 
-	// Votes. Deliberately no code column, so a vote can't be traced to a code.
-	dbDelta("CREATE TABLE " . table('votes') . " (
-		id bigint unsigned NOT NULL AUTO_INCREMENT,
+	// Which code has voted in which poll. No ID and no timestamp, so rows can't be put in time order
+	// and matched against votes. Deleted with the session's codes, or when the poll is finalised.
+	dbDelta("CREATE TABLE " . table('code_uses') . " (
+		session char(10) NOT NULL,
+		code varchar(40) NOT NULL,
 		poll varchar(100) NOT NULL,
-		answers longtext NOT NULL,
+		PRIMARY KEY  (session, code, poll)
+	) $charset;");
+
+	// Sign-ins on the club site. Only a hash of the token is stored.
+	dbDelta("CREATE TABLE " . table('tokens') . " (
+		token_hash char(64) NOT NULL,
+		session char(10) NOT NULL,
+		code varchar(40) NOT NULL,
+		expires_at datetime NOT NULL,
+		PRIMARY KEY  (token_hash),
+		KEY session (session)
+	) $charset;");
+
+	// Votes. No code, and a random ID instead of a counting one, so a person's votes
+	// across several polls can't be linked by being next to each other.
+	dbDelta("CREATE TABLE " . table('votes') . " (
+		id char(32) NOT NULL,
+		poll varchar(100) NOT NULL,
+		answer text NOT NULL,
 		PRIMARY KEY  (id),
 		KEY poll (poll)
 	) $charset;");
 
-	// Final tallies, kept after codes and votes are deleted.
+	// Final tallies, kept after votes are deleted.
 	dbDelta("CREATE TABLE " . table('results') . " (
 		poll varchar(100) NOT NULL,
 		result longtext NOT NULL,
 		total int unsigned NOT NULL,
-		issued int unsigned NOT NULL,
 		finalised_at datetime NOT NULL,
 		PRIMARY KEY  (poll)
 	) $charset;");
 
+	// Quiz nicknames, one per code per session. Never the code itself. Deleted after the session.
+	dbDelta("CREATE TABLE " . table('quiz_players') . " (
+		session char(10) NOT NULL,
+		code varchar(40) NOT NULL,
+		nickname varchar(60) NOT NULL,
+		PRIMARY KEY  (session, code),
+		UNIQUE KEY session_nickname (session, nickname)
+	) $charset;");
+
+	// Running quiz scores. Deleted after the session.
+	dbDelta("CREATE TABLE " . table('quiz_scores') . " (
+		session char(10) NOT NULL,
+		quiz varchar(100) NOT NULL,
+		code varchar(40) NOT NULL,
+		score int unsigned NOT NULL DEFAULT 0,
+		PRIMARY KEY  (session, quiz, code)
+	) $charset;");
+
+	// Which quiz questions a code has scored, so points can't be counted twice. Deleted after the session.
+	dbDelta("CREATE TABLE " . table('quiz_answers') . " (
+		session char(10) NOT NULL,
+		quiz varchar(100) NOT NULL,
+		code varchar(40) NOT NULL,
+		question varchar(100) NOT NULL,
+		PRIMARY KEY  (session, quiz, code, question)
+	) $charset;");
+
+	install_role();
+	schedule_cleanup();
+
 	update_option('carrick_polls_db_version', DB_VERSION);
 }
 
+/**
+ * Poll managers can open the Polls admin page and nothing else beyond their own profile.
+ * Administrators get the same capability.
+ */
+function install_role(): void
+{
+	if (get_role(ROLE) === null) {
+		add_role(ROLE, 'Poll manager', ['read' => true, CAPABILITY => true]);
+	}
+	get_role('administrator')?->add_cap(CAPABILITY);
+}
+
 register_activation_hook(__FILE__, __NAMESPACE__ . '\\install');
+register_deactivation_hook(__FILE__, __NAMESPACE__ . '\\unschedule_cleanup');
 
 // Uploading a new zip replaces the files without re-activating, so check the tables on load too
 add_action('plugins_loaded', function (): void {
@@ -95,11 +174,3 @@ add_action('plugins_loaded', function (): void {
 		install();
 	}
 });
-
-/**
- * Poll slugs: lowercase letters, numbers and hyphens, the same as the .md file name on the frontend.
- */
-function is_valid_slug(string $slug): bool
-{
-	return (bool) preg_match('/^[a-z0-9-]{1,100}$/', $slug);
-}

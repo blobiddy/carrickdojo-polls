@@ -1,7 +1,8 @@
 <?php
 /**
- * Tools -> Polls admin page: generate, print and delete codes, and see each poll's status.
- * Admins only (manage_options). Every form is protected with a nonce.
+ * The Polls admin page: generate, print and delete session codes; see polls; set the polling secret.
+ * Open to Poll managers and admins (CAPABILITY). Only admins can set the secret.
+ * Every form is protected with a nonce.
  */
 
 declare(strict_types=1);
@@ -15,15 +16,16 @@ if (!defined('ABSPATH')) {
 const PAGE = 'carrick-polls';
 
 add_action('admin_menu', function (): void {
-	add_management_page('Polls', 'Polls', 'manage_options', PAGE, __NAMESPACE__ . '\\render_page');
+	add_menu_page('Polls', 'Polls', CAPABILITY, PAGE, __NAMESPACE__ . '\\render_page', 'dashicons-chart-bar', 26);
 });
 
 add_action('admin_post_carrick_polls_generate', __NAMESPACE__ . '\\handle_generate');
 add_action('admin_post_carrick_polls_delete', __NAMESPACE__ . '\\handle_delete');
+add_action('admin_post_carrick_polls_secret', __NAMESPACE__ . '\\handle_secret');
 
 function page_url(array $args = []): string
 {
-	return add_query_arg(array_merge(['page' => PAGE], $args), admin_url('tools.php'));
+	return add_query_arg(array_merge(['page' => PAGE], $args), admin_url('admin.php'));
 }
 
 /**
@@ -35,47 +37,65 @@ function redirect_with(string $type, string $message, array $args = []): never
 	exit;
 }
 
-function check_request(string $action): void
+function check_request(string $action, string $capability = CAPABILITY): void
 {
-	if (!current_user_can('manage_options')) {
+	if (!current_user_can($capability)) {
 		wp_die('Not allowed.', 403);
 	}
 	check_admin_referer($action);
+}
+
+function posted(string $key): string
+{
+	return sanitize_text_field(wp_unslash($_POST[$key] ?? ''));
 }
 
 function handle_generate(): void
 {
 	check_request('carrick_polls_generate');
 
-	$poll = sanitize_text_field(wp_unslash($_POST['poll'] ?? ''));
-	$count = absint($_POST['count'] ?? DEFAULT_CODES);
-
-	$result = generate_codes($poll, $count);
+	$session = posted('session');
+	$result = generate_codes($session, absint(posted('count')));
 
 	if (is_wp_error($result)) {
 		redirect_with('error', $result->get_error_message());
 	}
 
-	redirect_with('success', sprintf('%d codes generated for "%s".', count($result), $poll), ['print' => $poll]);
+	redirect_with('success', sprintf('%d codes generated for %s.', count($result), session_label($session)), ['print' => $session]);
 }
 
 function handle_delete(): void
 {
 	check_request('carrick_polls_delete');
 
-	$poll = sanitize_text_field(wp_unslash($_POST['poll'] ?? ''));
-	$result = delete_codes($poll);
+	$session = posted('session');
+	$result = delete_codes($session);
 
 	if (is_wp_error($result)) {
 		redirect_with('error', $result->get_error_message());
 	}
 
-	redirect_with('success', sprintf('Codes deleted for "%s".', $poll));
+	redirect_with('success', sprintf('Codes deleted for %s.', session_label($session)));
+}
+
+function handle_secret(): void
+{
+	check_request('carrick_polls_secret', 'manage_options');
+
+	// Not sanitised as text: the secret must be saved exactly as entered
+	$secret = trim((string) wp_unslash($_POST['secret'] ?? ''));
+	$result = save_secret($secret);
+
+	if (is_wp_error($result)) {
+		redirect_with('error', $result->get_error_message());
+	}
+
+	redirect_with('success', 'Polling secret saved.');
 }
 
 function render_page(): void
 {
-	if (!current_user_can('manage_options')) {
+	if (!current_user_can(CAPABILITY)) {
 		return;
 	}
 
@@ -86,11 +106,16 @@ function render_page(): void
 
 	render_notice();
 
-	if ($print !== '' && is_valid_slug($print)) {
+	if ($print !== '' && is_valid_session($print)) {
 		render_print($print);
 	} else {
+		render_setup_warning();
 		render_generate_form();
-		render_poll_list();
+		render_sessions();
+		render_polls();
+		if (current_user_can('manage_options')) {
+			render_secret_form();
+		}
 	}
 
 	echo '</div>';
@@ -108,18 +133,26 @@ function render_notice(): void
 	printf('<div class="notice notice-%s"><p>%s</p></div>', esc_attr($type), esc_html($message));
 }
 
+function render_setup_warning(): void
+{
+	if (is_secret_set()) {
+		return;
+	}
+	echo '<div class="notice notice-warning"><p><strong>Polls are not set up yet.</strong> An administrator needs to set the polling secret at the bottom of this page.</p></div>';
+}
+
 function render_generate_form(): void
 {
 	?>
-	<h2>Generate codes</h2>
-	<p>The poll slug must match the poll's <code>.md</code> file name on the club site, e.g. <code>site-direction</code>.</p>
+	<h2>Generate session codes</h2>
+	<p>Each ninja and mentor gets one code per session. It lets them sign in and vote once in every poll open that session. Codes only work on the day, and are deleted the day after.</p>
 	<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
 		<input type="hidden" name="action" value="carrick_polls_generate">
 		<?php wp_nonce_field('carrick_polls_generate'); ?>
 		<table class="form-table" role="presentation">
 			<tr>
-				<th scope="row"><label for="carrick-poll">Poll slug</label></th>
-				<td><input id="carrick-poll" name="poll" type="text" class="regular-text" required pattern="[a-z0-9\-]{1,100}"></td>
+				<th scope="row"><label for="carrick-session">Session date</label></th>
+				<td><input id="carrick-session" name="session" type="date" required min="<?php echo esc_attr(today()); ?>" value="<?php echo esc_attr(today()); ?>"></td>
 			</tr>
 			<tr>
 				<th scope="row"><label for="carrick-count">Number of codes</label></th>
@@ -128,49 +161,45 @@ function render_generate_form(): void
 		</table>
 		<?php submit_button('Generate codes'); ?>
 	</form>
-	<p class="description">Generating again replaces a poll's codes, but only while none have been used.</p>
+	<p class="description">Generating again replaces a session's codes, but only until someone has signed in with one.</p>
 	<?php
 }
 
-function render_poll_list(): void
+function render_sessions(): void
 {
-	$polls = list_polls();
+	$sessions = list_sessions();
 
-	echo '<h2>Polls</h2>';
+	echo '<h2>Sessions</h2>';
 
-	if ($polls === []) {
-		echo '<p>No polls yet.</p>';
+	if ($sessions === []) {
+		echo '<p>No session codes yet.</p>';
 		return;
 	}
 	?>
 	<table class="widefat striped">
 		<thead>
 			<tr>
-				<th scope="col">Poll</th>
-				<th scope="col">Codes issued</th>
-				<th scope="col">Votes</th>
+				<th scope="col">Session</th>
+				<th scope="col">Codes</th>
 				<th scope="col">Status</th>
 				<th scope="col">Actions</th>
 			</tr>
 		</thead>
 		<tbody>
-			<?php foreach ($polls as $poll) : ?>
+			<?php foreach ($sessions as $row) : ?>
 				<tr>
-					<td><code><?php echo esc_html($poll['poll']); ?></code></td>
-					<td><?php echo (int) $poll['issued']; ?></td>
-					<td><?php echo (int) $poll['used']; ?></td>
-					<td><?php echo $poll['finalised'] ? 'Finalised' : 'Open for codes'; ?></td>
+					<td><?php echo esc_html(session_label($row['session'])); ?></td>
+					<td><?php echo (int) $row['codes']; ?></td>
+					<td><?php echo $row['in_use'] ? 'In use' : 'Not used yet'; ?></td>
 					<td>
-						<?php if (!$poll['finalised']) : ?>
-							<a class="button" href="<?php echo esc_url(page_url(['print' => $poll['poll']])); ?>">Print codes</a>
-							<?php if ($poll['used'] === 0) : ?>
-								<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline">
-									<input type="hidden" name="action" value="carrick_polls_delete">
-									<input type="hidden" name="poll" value="<?php echo esc_attr($poll['poll']); ?>">
-									<?php wp_nonce_field('carrick_polls_delete'); ?>
-									<button type="submit" class="button button-link-delete">Delete codes</button>
-								</form>
-							<?php endif; ?>
+						<a class="button" href="<?php echo esc_url(page_url(['print' => $row['session']])); ?>">Print codes</a>
+						<?php if (!$row['in_use']) : ?>
+							<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline">
+								<input type="hidden" name="action" value="carrick_polls_delete">
+								<input type="hidden" name="session" value="<?php echo esc_attr($row['session']); ?>">
+								<?php wp_nonce_field('carrick_polls_delete'); ?>
+								<button type="submit" class="button button-link-delete">Delete codes</button>
+							</form>
 						<?php endif; ?>
 					</td>
 				</tr>
@@ -180,12 +209,76 @@ function render_poll_list(): void
 	<?php
 }
 
+function render_polls(): void
+{
+	$polls = list_polls();
+
+	echo '<h2>Polls</h2>';
+	echo '<p>Polls are written as <code>.md</code> files on the club site. This list shows polls that have votes or a final result.</p>';
+
+	if ($polls === []) {
+		echo '<p>No votes yet.</p>';
+		return;
+	}
+	?>
+	<table class="widefat striped">
+		<thead>
+			<tr>
+				<th scope="col">Poll</th>
+				<th scope="col">Votes</th>
+				<th scope="col">Status</th>
+			</tr>
+		</thead>
+		<tbody>
+			<?php foreach ($polls as $poll) : ?>
+				<tr>
+					<td><code><?php echo esc_html($poll['poll']); ?></code></td>
+					<td><?php echo (int) $poll['votes']; ?></td>
+					<td><?php echo $poll['finalised'] ? 'Finalised' : 'Open'; ?></td>
+				</tr>
+			<?php endforeach; ?>
+		</tbody>
+	</table>
+	<?php
+}
+
+function render_secret_form(): void
+{
+	?>
+	<h2>Polling secret</h2>
+	<?php if (secret_from_config() !== null) : ?>
+		<p>Set in <code>wp-config.php</code> (<code>DOJO_POLLING_SECRET</code>). Change it there.</p>
+	<?php else : ?>
+		<p>
+			Status: <strong><?php echo is_secret_set() ? 'Set' : 'Not set'; ?></strong>.
+			This must match <code>DOJO_POLLING_SECRET</code> in the club site's Vercel settings.
+			Only a hash is stored, so it can't be shown again. Saving replaces the old one.
+		</p>
+		<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+			<input type="hidden" name="action" value="carrick_polls_secret">
+			<?php wp_nonce_field('carrick_polls_secret'); ?>
+			<table class="form-table" role="presentation">
+				<tr>
+					<th scope="row"><label for="carrick-secret">New secret</label></th>
+					<td>
+						<input id="carrick-secret" name="secret" type="password" class="regular-text" required minlength="<?php echo (int) MIN_SECRET_LENGTH; ?>" autocomplete="off">
+						<p class="description">At least <?php echo (int) MIN_SECRET_LENGTH; ?> characters. Create one with <code>openssl rand -hex 32</code>.</p>
+					</td>
+				</tr>
+			</table>
+			<?php submit_button('Save secret'); ?>
+		</form>
+	<?php endif; ?>
+	<?php
+}
+
 /**
  * Codes as cut-out slips. Print with Ctrl+P: the print styles hide the WordPress admin around them.
  */
-function render_print(string $poll): void
+function render_print(string $session): void
 {
-	$codes = list_codes($poll);
+	$codes = list_codes($session);
+	$label = session_label($session);
 	?>
 	<p class="carrick-no-print">
 		<a href="<?php echo esc_url(page_url()); ?>">&larr; Back to polls</a>
@@ -193,15 +286,15 @@ function render_print(string $poll): void
 	</p>
 
 	<?php if ($codes === []) : ?>
-		<p>No codes for <code><?php echo esc_html($poll); ?></code>.</p>
+		<p>No codes for <?php echo esc_html($label); ?>.</p>
 		<?php return; ?>
 	<?php endif; ?>
 
 	<style>
 		.carrick-slips { display: grid; grid-template-columns: repeat(3, 1fr); }
 		.carrick-slip { border: 1px dashed #999; padding: 1.2em 0.5em; text-align: center; break-inside: avoid; }
-		.carrick-slip strong { display: block; font-size: 1.4em; letter-spacing: 0.05em; font-family: monospace; }
-		.carrick-slip span { font-size: 0.85em; color: #555; }
+		.carrick-slip strong { display: block; margin: 0.3em 0; font-size: 1.4em; letter-spacing: 0.05em; font-family: monospace; }
+		.carrick-slip span { display: block; font-size: 0.85em; color: #555; }
 		@media print {
 			#adminmenumain, #wpadminbar, #wpfooter, .notice, .carrick-no-print, .wrap > h1 { display: none !important; }
 			#wpcontent, #wpbody-content { margin: 0 !important; padding: 0 !important; }
@@ -211,9 +304,9 @@ function render_print(string $poll): void
 	<div class="carrick-slips">
 		<?php foreach ($codes as $code) : ?>
 			<div class="carrick-slip">
-				<span>CarrickDojo poll code</span>
+				<span>CarrickDojo code for <?php echo esc_html($label); ?></span>
 				<strong><?php echo esc_html($code); ?></strong>
-				<span>Use once at club.carrickdojo.com</span>
+				<span>Sign in at club.carrickdojo.com. Keep it to yourself!</span>
 			</div>
 		<?php endforeach; ?>
 	</div>

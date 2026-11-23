@@ -1,6 +1,6 @@
 <?php
 /**
- * Generating, normalising and listing one-time codes.
+ * Session codes: generating, listing and deleting them.
  */
 
 declare(strict_types=1);
@@ -14,16 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Make codes case-insensitive and forgiving: " tiger red " and "Tiger_Red" both become "TIGER-RED".
- */
-function normalise_code(string $code): string
-{
-	$code = strtoupper(trim($code));
-	return (string) preg_replace('/[\s_-]+/', '-', $code);
-}
-
-/**
- * Pick $count unique ANIMAL-COLOUR codes at random (random_int is cryptographically secure).
+ * Pick $count unique COLOUR-ANIMAL codes at random (random_int is cryptographically secure).
  *
  * @return list<string>
  */
@@ -31,41 +22,54 @@ function random_codes(int $count): array
 {
 	$codes = [];
 	while (count($codes) < $count) {
-		$code = ANIMALS[random_int(0, count(ANIMALS) - 1)] . '-' . COLOURS[random_int(0, count(COLOURS) - 1)];
+		$code = COLOURS[random_int(0, count(COLOURS) - 1)] . '-' . ANIMALS[random_int(0, count(ANIMALS) - 1)];
 		$codes[$code] = true; // array keys keep them unique
 	}
 	return array_keys($codes);
 }
 
 /**
- * Replace a poll's codes with a fresh set. Refused once any code is used or the poll is finalised,
+ * Has anyone signed in or voted with this session's codes? If so, they're already in use.
+ */
+function session_in_use(string $session): bool
+{
+	global $wpdb;
+
+	$uses = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . table('code_uses') . ' WHERE session = %s', $session));
+	$tokens = (int) $wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM ' . table('tokens') . ' WHERE session = %s', $session));
+
+	return $uses + $tokens > 0;
+}
+
+/**
+ * Replace a session's codes with a fresh set. Refused once any code has been used,
  * because slips may already have been handed out.
  *
  * @return list<string>|WP_Error
  */
-function generate_codes(string $poll, int $count): array|WP_Error
+function generate_codes(string $session, int $count): array|WP_Error
 {
 	global $wpdb;
 
-	if (!is_valid_slug($poll)) {
-		return new WP_Error('invalid_slug', 'Poll slug can only use lowercase letters, numbers and hyphens.');
+	if (!is_valid_session($session)) {
+		return new WP_Error('invalid_session', 'Please choose the session date.');
+	}
+	if ($session < today()) {
+		return new WP_Error('past_session', 'That session has already happened.');
 	}
 	if ($count < 1 || $count > MAX_CODES) {
 		return new WP_Error('invalid_count', sprintf('Number of codes must be between 1 and %d.', MAX_CODES));
 	}
-	if (get_result($poll) !== null) {
-		return new WP_Error('finalised', 'This poll has already been finalised.');
-	}
-	if (count_codes($poll)['used'] > 0) {
-		return new WP_Error('codes_used', 'Some codes have already been used, so they can no longer be replaced.');
+	if (session_in_use($session)) {
+		return new WP_Error('in_use', 'Codes for this session are already in use, so they can no longer be replaced.');
 	}
 
 	$codes = random_codes($count);
 
 	$wpdb->query('START TRANSACTION');
-	$wpdb->delete(table('codes'), ['poll' => $poll]);
+	$wpdb->delete(table('codes'), ['session' => $session]);
 	foreach ($codes as $code) {
-		if ($wpdb->insert(table('codes'), ['poll' => $poll, 'code' => $code]) === false) {
+		if ($wpdb->insert(table('codes'), ['session' => $session, 'code' => $code]) === false) {
 			$wpdb->query('ROLLBACK');
 			return new WP_Error('db_error', 'Could not save the codes. Please try again.');
 		}
@@ -77,64 +81,60 @@ function generate_codes(string $poll, int $count): array|WP_Error
 }
 
 /**
- * Delete a poll's codes. Same rule as replacing them: only while none are used.
+ * Delete a session's codes. Same rule as replacing them: only while unused.
  */
-function delete_codes(string $poll): true|WP_Error
+function delete_codes(string $session): true|WP_Error
 {
 	global $wpdb;
 
-	if (count_codes($poll)['used'] > 0) {
-		return new WP_Error('codes_used', 'Some codes have already been used, so they can no longer be deleted.');
+	if (session_in_use($session)) {
+		return new WP_Error('in_use', 'Codes for this session are already in use, so they can no longer be deleted.');
 	}
-	$wpdb->delete(table('codes'), ['poll' => $poll]);
+	$wpdb->delete(table('codes'), ['session' => $session]);
 	return true;
-}
-
-/**
- * @return array{issued: int, used: int}
- */
-function count_codes(string $poll): array
-{
-	global $wpdb;
-	$row = $wpdb->get_row($wpdb->prepare(
-		'SELECT COUNT(*) AS issued, COALESCE(SUM(used), 0) AS used FROM ' . table('codes') . ' WHERE poll = %s',
-		$poll
-	));
-	return ['issued' => (int) ($row->issued ?? 0), 'used' => (int) ($row->used ?? 0)];
 }
 
 /**
  * @return list<string>
  */
-function list_codes(string $poll): array
+function list_codes(string $session): array
 {
 	global $wpdb;
-	return $wpdb->get_col($wpdb->prepare(
-		'SELECT code FROM ' . table('codes') . ' WHERE poll = %s ORDER BY code',
-		$poll
-	));
+	return $wpdb->get_col($wpdb->prepare('SELECT code FROM ' . table('codes') . ' WHERE session = %s ORDER BY code', $session));
 }
 
 /**
- * Every poll that has codes or a final result, for the admin page.
+ * Sessions that have codes, newest first, for the admin page.
  *
- * @return list<array{poll: string, issued: int, used: int, finalised: bool}>
+ * @return list<array{session: string, codes: int, in_use: bool}>
+ */
+function list_sessions(): array
+{
+	global $wpdb;
+
+	$rows = $wpdb->get_results('SELECT session, COUNT(*) AS codes FROM ' . table('codes') . ' GROUP BY session ORDER BY session DESC');
+
+	return array_map(
+		fn ($row) => ['session' => $row->session, 'codes' => (int) $row->codes, 'in_use' => session_in_use($row->session)],
+		$rows
+	);
+}
+
+/**
+ * Polls with votes waiting, or finalised, for the admin page.
+ *
+ * @return list<array{poll: string, votes: int, finalised: bool}>
  */
 function list_polls(): array
 {
 	global $wpdb;
 
 	$polls = [];
-	$rows = $wpdb->get_results(
-		'SELECT poll, COUNT(*) AS issued, COALESCE(SUM(used), 0) AS used FROM ' . table('codes') . ' GROUP BY poll'
-	);
-	foreach ($rows as $row) {
-		$polls[$row->poll] = ['poll' => $row->poll, 'issued' => (int) $row->issued, 'used' => (int) $row->used, 'finalised' => false];
+	foreach ($wpdb->get_results('SELECT poll, COUNT(*) AS votes FROM ' . table('votes') . ' GROUP BY poll') as $row) {
+		$polls[$row->poll] = ['poll' => $row->poll, 'votes' => (int) $row->votes, 'finalised' => false];
 	}
-
-	$rows = $wpdb->get_results('SELECT poll, issued, total FROM ' . table('results'));
-	foreach ($rows as $row) {
-		$polls[$row->poll] = ['poll' => $row->poll, 'issued' => (int) $row->issued, 'used' => (int) $row->total, 'finalised' => true];
+	foreach ($wpdb->get_results('SELECT poll, total FROM ' . table('results')) as $row) {
+		$polls[$row->poll] = ['poll' => $row->poll, 'votes' => (int) $row->total, 'finalised' => true];
 	}
 
 	ksort($polls);
