@@ -1,55 +1,64 @@
 <?php
 /**
- * REST routes, under /json/polls/ (the site's REST prefix is /json).
- *
- * Everything except results is for the club site's server only: it must send X-Polling-Secret.
- * The club site holds the polls and quizzes (.md files): it checks a poll is open, that answers are
- * real options, runs quiz timers and works out points. This plugin enforces codes and what each
- * kind of code may do, one vote per code per poll, anonymity and clean-up.
- *
- * See README.md for every endpoint's body and reply.
+ * REST API basics: the secret check every route uses, and a status route to test it.
  */
 
 declare(strict_types=1);
 
-namespace CarrickDojo\Polls;
+namespace DojoClub;
 
 if (!defined('ABSPATH')) {
 	exit;
 }
 
-const NAMESPACE_REST = 'polls';
+/**
+ * Scopes worked out by require_secret(), per request. Kept outside the request's parameters
+ * so nothing a client sends can set it.
+ *
+ * @return \WeakMap<\WP_REST_Request, string>
+ */
+function scopes(): \WeakMap
+{
+	static $scopes = null;
+	return $scopes ??= new \WeakMap();
+}
+
+/**
+ * Permission callback for routes the front end's server calls. Works out the scope (live or
+ * test) from the X-Dojo-Secret header.
+ */
+function require_secret(\WP_REST_Request $request): true|\WP_Error
+{
+	$scope = scope_for_secret((string) $request->get_header('X-Dojo-Secret'));
+	if ($scope === null) {
+		return new \WP_Error('dojo_forbidden', 'Not allowed.', ['status' => 403]);
+	}
+	scopes()[$request] = $scope;
+	return true;
+}
+
+/**
+ * The scope require_secret() worked out: every query must be limited to it. Only for
+ * routes protected by require_secret().
+ */
+function request_scope(\WP_REST_Request $request): string
+{
+	$scope = scopes()[$request] ?? null;
+	if ($scope === null) {
+		throw new \LogicException('request_scope() used on a route without require_secret()');
+	}
+	return $scope;
+}
 
 add_action('rest_api_init', function (): void {
-	$club = __NAMESPACE__ . '\\verify_club_site';
-	$poll = '(?P<poll>[a-z0-9-]{1,100})';
-
-	$routes = [
-		// Signing in and out, personas, live counts (rest-session.php)
-		['/signin', 'POST', 'rest_signin', $club],
-		['/signout', 'POST', 'rest_signout', $club],
-		['/signout-all', 'POST', 'rest_signout_all', $club],
-		['/me', 'POST', 'rest_me', $club],
-		['/persona', 'POST', 'rest_persona', $club],
-		['/live', 'POST', 'rest_live', $club],
-
-		// Polls (rest-votes.php)
-		['/vote', 'POST', 'rest_vote', $club],
-		["/$poll/finalise", 'POST', 'rest_finalise', $club],
-		["/$poll/results", 'GET', 'rest_results', '__return_true'],
-
-		// Quizzes (rest-quiz.php)
-		['/quiz/control', 'POST', 'rest_quiz_control', $club],
-		['/quiz/answer', 'POST', 'rest_quiz_answer', $club],
-		['/quiz/me', 'POST', 'rest_quiz_me', $club],
-		['/quiz/live', 'POST', 'rest_quiz_live', $club],
-	];
-
-	foreach ($routes as [$route, $method, $callback, $permission]) {
-		register_rest_route(NAMESPACE_REST, $route, [
-			'methods' => $method,
-			'callback' => __NAMESPACE__ . '\\' . $callback,
-			'permission_callback' => $permission,
-		]);
-	}
+	// GET /dojo/v1/status: shows the front end is connected, and with which secret
+	register_rest_route(API_NAMESPACE, '/status', [
+		'methods'             => 'GET',
+		'permission_callback' => __NAMESPACE__ . '\\require_secret',
+		'callback'            => fn (\WP_REST_Request $request) => new \WP_REST_Response([
+			'club'    => setting('club_name'),
+			'version' => VERSION,
+			'scope'   => request_scope($request),
+		], 200),
+	]);
 });

@@ -206,7 +206,8 @@ There's one WordPress site. Test data is kept separate inside it:
 
 - Sessions, questionnaires, proposals and projects have a **`test` flag**; everything else hangs off them.
 - Requests with the **test secret** see and change only test data. Requests with the live secret see only live data. This is enforced in one place in the plugin.
-- **Create test session** (Tools): makes a session for today with polls that are open, closing soon and closed, an always-open poll, a practice quiz and sample library loans.
+- **Test sessions by hand:** any session can be ticked **Test**, on any date, including non-club days and breaks.
+- **Create test session** (Tools): choose the date and start time (default: now, for 1 hour) and which samples to include: polls that are open, closing soon and closed, an always-open poll, a practice quiz and library loans. Test codes (members, mentors, screen) are generated with it, ready to print.
 - **Delete all test data** (Tools).
 - Test data never appears in reports or exports unless asked for.
 

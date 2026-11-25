@@ -1,7 +1,7 @@
 <?php
 /**
- * Runs when the plugin is deleted (not just deactivated) in WordPress admin.
- * Removes the tables, settings, role and scheduled clean-up, so nothing is left behind.
+ * Runs when the plugin is deleted in WP admin. Removes everything the plugin added.
+ * Take a backup first (Tools → Backup) if the data might be needed again.
  */
 
 declare(strict_types=1);
@@ -10,16 +10,11 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 	exit;
 }
 
-global $wpdb;
+delete_option('dojo_club_settings');
+delete_option('dojo_club_secret_live');
+delete_option('dojo_club_secret_test');
 
-foreach (['codes', 'code_uses', 'tokens', 'votes', 'results', 'personas', 'quiz_runs', 'quiz_answers'] as $name) {
-	$wpdb->query('DROP TABLE IF EXISTS ' . $wpdb->prefix . 'carrick_poll_' . $name);
-}
+// Dojo roles ticked on adults' profiles
+delete_metadata('user', 0, 'dojo_roles', '', true);
 
-delete_option('carrick_polls_db_version');
-delete_option('carrick_polls_secret_hash');
-
-remove_role('poll_manager');
-get_role('administrator')?->remove_cap('manage_carrick_polls');
-
-wp_clear_scheduled_hook('carrick_polls_cleanup');
+remove_role('dojo_ninja');
